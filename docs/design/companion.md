@@ -129,14 +129,15 @@ owner 的决定：「轻量的模式就只做对话，甚至连 dsh 内核都不
 
 | | 轻量 | 完整 |
 |---|---|---|
-| 大脑 | 手机直接调 DeepSeek 官方 Messages 接口：`https://api.deepseek.com/anthropic/v1/messages`，`x-api-key` + `anthropic-version: 2023-06-01`，模型 `deepseek-flash`，`thinking: disabled`，流式。和引擎的 `@deepseek-ai/dsh-llm-deepseek` 同一个接口 | 当前主机上的 DSH 会话，`dsh-go-companion` 预设 |
-| 要什么 | App 里存的 DeepSeek API Key（设置里填的那个，安全存储）。只用 DeepSeek 账号登录、没有 Key 时不能用 | 一台连着的主机 |
+| 大脑 | 手机直接调 DeepSeek 官方 Messages 接口：`https://api.deepseek.com/anthropic/v1/messages`，`x-api-key` + `anthropic-version: 2023-06-01`，模型 `deepseek-flash`，`thinking: disabled`，流式。和引擎的 `@deepseek-ai/dsh-llm-deepseek` 同一个接口。菜单「渠道」里选了一个渠道时，改走那个渠道的 OpenAI 兼容 Chat Completions（`/chat/completions`，流式；Key 可以为空，请求头可自带 `Authorization`） | 当前主机上的 DSH 会话，`dsh-go-companion` 预设；菜单「模型」换这段会话的模型，目录里有主机上的全部渠道和模型 |
+| 要什么 | App 里存的 DeepSeek API Key（设置里填的那个，安全存储），或者一个渠道（可以不要 Key）。只用 DeepSeek 账号登录、没有 Key、也没选渠道时不能用 | 一台连着的主机 |
 | 人设 | `companionPersonaCore` 做 system，和预设里的同一份 | 预设里的人设 |
 | 对话记录 | 这台手机上的 `<伙伴目录>/light-chat.json`，存最近 80 行，每次带最近 24 行（同一方连续的行合并，开头是用户）。移除素材包不删它，「重新认识」删它 | 主机上的会话，菜单能打开 |
 | 状态和记忆 | 这台手机上的 `<伙伴目录>/light-state.json`：`CompanionLocalStore`（packages/dsh_client，Pro C434/C436）跑和主机桥接同一套规则（C303），storeId、revision、冲突错误都一样，有和桥接 store 对拍的夹具。页面经 `CompanionKeeper` 两边通用 | 主机上的状态和「她记得的事」 |
 | 工具 | 没有 | 主机的全部工具（0.2.2-rc.1 是 31 个），开了手机操控再加 13 个手机工具。权限用主机的默认设置，不受「自动批准命令」影响；要批准时页面出现「有件事要你确认」，点了到普通对话里处理。小屋里直接审批按 Pro C420/C422 做。以前那个只有人设、只读的会话不再复用，留在主机上，下次说话时开新的 |
 
 - **出错时**：没有 Key、Key 被拒（401/403）、太忙（429 或 `overloaded_error`）各有一句；一个字都没回就失败的话，这句话放回输入框，记录里也不留。停止时她已经说出的部分留下。
+- **渠道。** 轻量模式的渠道列表就是酒馆的那一份（`tavern_settings.dart` / `tavern_channels.dart`）：偏好键 `tavern.channels`，Key 在酒馆的安全存储里；小屋只多记一个选择（`companion.channel`），渠道被删掉时落回 DeepSeek 官方。所以第三方接口只要在酒馆设置或小屋菜单里加一次，两边都能选。适配模型（`companion_adapt.dart`）也用同一个渠道。
 - **两种模式共用一套回复处理**（`_onReply`）：标记只执行一次、字幕、口型、说完后的心情，都和完整模式一样。
 - **切换**时丢掉正在路上的回复，不再打招呼，只换掉对话的去处。
 

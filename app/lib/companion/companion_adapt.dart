@@ -37,6 +37,7 @@ class CompanionAdaptError implements Exception {
 Future<Map<String, Object?>> companionAdaptAsk({
   required http.Client client,
   required String apiKey,
+  CompanionLightChannel? channel,
   required CompanionProbe probe,
   String? note,
   Map<String, Object?>? current,
@@ -46,6 +47,7 @@ Future<Map<String, Object?>> companionAdaptAsk({
   await for (final delta in streamCompanionReply(
     client: client,
     apiKey: apiKey,
+    channel: channel,
     system: companionAdaptSystem,
     lines: [CompanionLine.user(companionAdaptRequest(probe, note: note, current: current, evidence: evidence))],
     maxTokens: 3000,

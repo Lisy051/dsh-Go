@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsh_app/companion/companion_context.dart';
 import 'package:dsh_app/companion/companion_light.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -21,6 +22,18 @@ MockClient _answering(int status, String body, {void Function(http.BaseRequest, 
       seen?.call(request, await bodyStream.bytesToString());
       return http.StreamedResponse(Stream.value(utf8.encode(body)), status);
     });
+
+/// Chat Completions' stream: one JSON per `data:` line, then `[DONE]`.
+String _chatSse(List<Map<String, Object?>> events) =>
+    [for (final event in events) 'data: ${jsonEncode(event)}\n\n', 'data: [DONE]\n\n'].join();
+
+Map<String, Object?> _chunk(String text) => {
+  'choices': [
+    {
+      'delta': {'content': text},
+    },
+  ],
+};
 
 void main() {
   group('reply', () {
@@ -97,6 +110,145 @@ void main() {
       expect(
         await failure(MockClient.streaming((_, _) async => throw const SocketException('offline'))),
         CompanionLightFailure.network,
+      );
+    });
+  });
+
+  group('channel', () {
+    test('a whole /chat/completions URL is kept; a root or /v1 gets the path', () {
+      expect(
+        companionChatCompletionsUrl('https://a.example/v1').toString(),
+        'https://a.example/v1/chat/completions',
+      );
+      expect(
+        companionChatCompletionsUrl('https://a.example/v1/').toString(),
+        'https://a.example/v1/chat/completions',
+      );
+      expect(
+        companionChatCompletionsUrl('https://a.example/v1/chat/completions').toString(),
+        'https://a.example/v1/chat/completions',
+      );
+      expect(
+        companionChatCompletionsUrl('https://a.example').toString(),
+        'https://a.example/chat/completions',
+      );
+    });
+
+    test('asks in Chat Completions form, with a system line and flattened context', () async {
+      late http.BaseRequest request;
+      late Map<String, Object?> body;
+      final client = _answering(
+        200,
+        _chatSse([
+          _chunk('[表情:开心]'),
+          _chunk('你来啦。'),
+        ]),
+        seen: (r, b) {
+          request = r;
+          body = jsonDecode(b) as Map<String, Object?>;
+        },
+      );
+      final context = companionTurnContext(now: DateTime.utc(2026, 1, 1, 9), utcOffsetMinutes: 0);
+      final words = await streamCompanionReply(
+        client: client,
+        apiKey: 'sk-relay',
+        channel: const CompanionLightChannel(
+          baseUrl: 'https://relay.example/v1',
+          model: 'gpt-x',
+          headers: {'HTTP-Referer': 'https://app.example'},
+        ),
+        system: '你是鲸鱼娘',
+        lines: const [CompanionLine.user('你好')],
+        context: context,
+      ).toList();
+      expect(words.join(), '[表情:开心]你来啦。');
+      expect(request.url.toString(), 'https://relay.example/v1/chat/completions');
+      expect(request.headers['Authorization'], 'Bearer sk-relay');
+      expect(request.headers['HTTP-Referer'], 'https://app.example');
+      expect(body['model'], 'gpt-x');
+      expect(body['stream'], isTrue);
+      expect(body['messages'], [
+        {'role': 'system', 'content': '你是鲸鱼娘'},
+        {
+          'role': 'user',
+          'content': '你好\n\n${context.text}',
+        },
+      ]);
+    });
+
+    test('a keyless channel keeps its own Authorization header', () async {
+      late http.BaseRequest request;
+      final client = _answering(200, _chatSse([_chunk('在')]), seen: (r, _) => request = r);
+      await streamCompanionReply(
+        client: client,
+        apiKey: '',
+        channel: const CompanionLightChannel(
+          baseUrl: 'http://192.168.1.2:1234/v1',
+          model: 'local',
+          headers: {'Authorization': 'Basic abc'},
+        ),
+        system: 's',
+        lines: const [CompanionLine.user('hi')],
+      ).toList();
+      expect(request.url.toString(), 'http://192.168.1.2:1234/v1/chat/completions');
+      expect(request.headers['Authorization'], 'Basic abc');
+    });
+
+    test('content parts, a refused key and an error event are handled', () async {
+      final parts = await streamCompanionReply(
+        client: _answering(
+          200,
+          _chatSse([
+            {
+              'choices': [
+                {
+                  'delta': {
+                    'content': [
+                      {'type': 'text', 'text': '一'},
+                      {'type': 'text', 'text': '二'},
+                    ],
+                  },
+                },
+              ],
+            },
+          ]),
+        ),
+        apiKey: 'k',
+        channel: const CompanionLightChannel(baseUrl: 'https://r.example/v1', model: 'm'),
+        system: 's',
+        lines: const [CompanionLine.user('hi')],
+      ).toList();
+      expect(parts.join(), '一二');
+
+      Future<CompanionLightFailure> failure(MockClient client) async {
+        try {
+          await streamCompanionReply(
+            client: client,
+            apiKey: 'k',
+            channel: const CompanionLightChannel(baseUrl: 'https://r.example/v1', model: 'm'),
+            system: 's',
+            lines: const [CompanionLine.user('hi')],
+          ).toList();
+        } on CompanionLightError catch (error) {
+          return error.failure;
+        }
+        fail('no error');
+      }
+
+      expect(await failure(_answering(401, '{"error":"bad key"}')), CompanionLightFailure.badKey);
+      expect(await failure(_answering(429, '')), CompanionLightFailure.busy);
+      expect(
+        await failure(
+          _answering(
+            200,
+            _chatSse([
+              {
+                'error': {'type': 'rate_limit_error', 'message': 'slow down'},
+              },
+            ]),
+          ),
+        ),
+        CompanionLightFailure.busy,
       );
     });
   });

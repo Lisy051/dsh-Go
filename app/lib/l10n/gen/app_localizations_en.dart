@@ -5589,7 +5589,8 @@ class L10nEn extends L10n {
   String get companionModeLight => 'Light';
 
   @override
-  String get companionModeLightHint => 'Chat only. The phone talks to the model; no engine';
+  String get companionModeLightHint =>
+      'Chat only. The phone talks to the model; no engine, and a third-party channel is fine';
 
   @override
   String get companionModeFull => 'Full';
@@ -5598,7 +5599,34 @@ class L10nEn extends L10n {
   String get companionModeFullHint => 'DSH on the host, with tools and phone control';
 
   @override
-  String get companionLightNoKey => 'Light mode needs a DeepSeek API key. Add one in Settings and we can talk.';
+  String get companionMenuChannel => 'Channel';
+
+  @override
+  String get companionMenuChannelHint => 'The endpoint her light mode talks to';
+
+  @override
+  String get companionChannelNote =>
+      'Shared with the Tavern: add one here or in Tavern settings and both modes can use it. Keys stay in this phone\'s secure storage.';
+
+  @override
+  String get companionChannelEditorNote =>
+      'Any OpenAI-compatible service works: a relay, OpenRouter, a model on your own computer. The key stays in this phone\'s secure storage, and the channel appears in the Tavern\'s list too.';
+
+  @override
+  String get companionModel => 'Model';
+
+  @override
+  String get companionModelHint => 'Which host model answers in Full mode';
+
+  @override
+  String get companionModelDefault => 'Host default';
+
+  @override
+  String get companionModelFailed => 'Couldn\'t switch to that model. Try again in a moment.';
+
+  @override
+  String get companionLightNoKey =>
+      'Light mode needs a DeepSeek API key, or a third-party channel chosen in the menu. Add one in Settings and we can talk.';
 
   @override
   String get companionLightBadKey => 'The API key seems wrong, or it is no longer valid.';

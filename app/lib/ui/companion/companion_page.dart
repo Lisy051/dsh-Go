@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../companion/companion_adapt.dart';
 import '../../companion/companion_bond.dart';
+import '../../companion/companion_channels.dart';
 import '../../companion/companion_context.dart';
 import '../../companion/companion_initiative.dart';
 import '../../companion/companion_initiative_owner.dart';
@@ -47,11 +48,14 @@ import '../../state/app_notes.dart';
 import '../../state/chat_state.dart';
 import '../../state/connection_state.dart';
 import '../../state/hosts_state.dart';
+import '../../state/models_state.dart';
 import '../../state/sessions_state.dart';
 import '../../state/settings_state.dart';
 import '../../state/voice_model_state.dart';
 import '../../state/voice_settings.dart';
 import '../../state/voice_state.dart';
+import '../../tavern/tavern_channels.dart' show tavernChannelKeysProvider;
+import '../chat/model_sheet.dart' show modelShortName, showModelSheet;
 import '../chat/voice/voice_controller.dart';
 import '../common/app_dialog.dart';
 import '../common/app_sheet.dart';
@@ -66,6 +70,7 @@ import 'companion_ask.dart';
 import 'companion_chrome.dart';
 import 'companion_log.dart';
 import 'companion_memory_page.dart';
+import 'companion_model_page.dart';
 import 'companion_persona_page.dart';
 import 'companion_voice_page.dart';
 import 'companion_stage.dart';
@@ -997,18 +1002,31 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
   }
 
   /// Asks her own AI for an adapter, checks it, and she wears it at once.
-  /// [note]: what the person said is off, for another go.
+  /// [note]: what the person said is off, for another go. The same channel
+  /// light mode talks to answers this.
   Future<void> _adapt({String? note}) async {
     final store = _store;
     final probe = _probe;
     if (store == null || probe == null || _adapting) return;
     final l10n = context.l10n;
-    final key = ref.read(settingsProvider).apiKey.trim();
-    if (key.isEmpty) {
+    setState(() => _adapting = true);
+    final channel = ref.read(companionActiveChannelProvider);
+    final String key;
+    try {
+      key = channel == null
+          ? ref.read(settingsProvider).apiKey.trim()
+          : (await ref.read(tavernChannelKeysProvider).read(channel.id))?.trim() ?? '';
+    } on Object {
+      if (mounted) setState(() => _adapting = false);
+      _say(l10n.companionAdaptFailed(l10n.companionAdaptNetwork));
+      return;
+    }
+    if (channel == null && key.isEmpty) {
+      if (mounted) setState(() => _adapting = false);
       _say(l10n.companionAdaptNoKey);
       return;
     }
-    setState(() => _adapting = true);
+    if (!mounted) return;
     _say(l10n.companionAdaptStart);
     _stage.command('mood', {'mood': 'thinking'});
     final client = ref.read(companionLightClientProvider)();
@@ -1016,6 +1034,7 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
       final adapter = await companionAdaptAsk(
         client: client,
         apiKey: key,
+        channel: companionLightChannelOf(channel),
         probe: probe,
         note: note,
         current: probe.adapted ? await companionAdapterRead(store.pack) : null,
@@ -2110,12 +2129,59 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
     };
   }
 
+  /// Full mode's model, as the menu names it. Deliberately no model catalog
+  /// read here: opening the menu must not start anything (the sheet reads it
+  /// only when the person taps through).
+  String _modelName(L10n l10n) {
+    final sessionId = _sessionId;
+    final selection = sessionId == null ? null : ref.read(chatProvider(sessionId)).model;
+    return selection == null ? l10n.companionModelDefault : modelShortName(selection, null);
+  }
+
+  /// Full mode: her conversation's model, out of the host's whole catalog
+  /// (DeepSeek's own and every provider added there). Opens her conversation
+  /// first, as her first line would.
+  Future<void> _openModel() async {
+    try {
+      final binding = await ref.read(companionSessionsProvider.notifier).ensure();
+      if (!mounted) return;
+      final sessionId = binding.sessionId;
+      // Her conversation is now bound, so its state (and the model it reports)
+      // survives the sheet and the pick goes to it.
+      _bind(sessionId);
+      final catalog = ref.read(currentModelCatalogProvider);
+      final current = ref.read(chatProvider(sessionId)).model ?? catalog?.defaultSelection;
+      await showModelSheet(
+        context,
+        current: current,
+        onSelected: (selection) => unawaited(_setModel(sessionId, selection)),
+      );
+    } on Object catch (error) {
+      if (mounted) _notice(_failureText(error));
+    }
+  }
+
+  Future<void> _setModel(String sessionId, ModelSelection selection) async {
+    try {
+      final ok = await ref.read(chatProvider(sessionId).notifier).setModel(selection);
+      if (mounted && !ok) _notice(context.l10n.companionModelFailed);
+    } on Object {
+      if (mounted) _notice(context.l10n.companionModelFailed);
+    }
+  }
+
   /// Light mode: the reply comes straight from the model, and the conversation
-  /// stays on this phone.
+  /// stays on this phone. [companionActiveChannelProvider] picks the endpoint:
+  /// DeepSeek's own (the app's key) or a channel added under 酒馆 › 渠道.
   Future<void> _sendLight(String raw, bool Function() current) async {
     final text = raw.trim();
-    final key = ref.read(settingsProvider).apiKey.trim();
-    if (key.isEmpty) throw const CompanionLightError(CompanionLightFailure.noKey);
+    final channel = ref.read(companionActiveChannelProvider);
+    final key = channel == null
+        ? ref.read(settingsProvider).apiKey.trim()
+        : (await ref.read(tavernChannelKeysProvider).read(channel.id))?.trim() ?? '';
+    if (channel == null && key.isEmpty) throw const CompanionLightError(CompanionLightFailure.noKey);
+    // The page left, or the mode changed, while the key was read.
+    if (!current()) return;
     final history = _lightHistory ??= CompanionLightHistory.at(_store!.root);
     await history.load();
     // What she has been asked to remember, kept on this phone. Unreadable
@@ -2149,6 +2215,7 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
         streamCompanionReply(
           client: client,
           apiKey: key,
+          channel: companionLightChannelOf(channel),
           system: companionLightSystem(memories, persona: _persona()),
           lines: history.context(),
           context: turnContext,
@@ -2730,6 +2797,36 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
                         _chooseMode();
                       },
                     ),
+                    // Light mode calls the model itself, so it picks an endpoint;
+                    // full mode's model is the host's.
+                    if (light)
+                      SettingsTile(
+                        icon: AppIcons.model,
+                        tinted: false,
+                        title: l10n.companionMenuChannel,
+                        subtitle: l10n.companionMenuChannelHint,
+                        value: Text(
+                          ref.read(companionActiveChannelProvider)?.name ?? l10n.tavernChannelDeepSeek,
+                        ),
+                        onTap: () {
+                          Navigator.of(sheet).pop();
+                          unawaited(
+                            Navigator.of(context).push(CompanionModelPage.route()),
+                          );
+                        },
+                      )
+                    else
+                      SettingsTile(
+                        icon: AppIcons.model,
+                        tinted: false,
+                        title: l10n.companionModel,
+                        subtitle: l10n.companionModelHint,
+                        value: Text(_modelName(l10n)),
+                        onTap: () {
+                          Navigator.of(sheet).pop();
+                          unawaited(_openModel());
+                        },
+                      ),
                     SettingsTile(
                       icon: AppIcons.bookmark,
                       tinted: false,

@@ -5262,7 +5262,7 @@ class L10nZh extends L10n {
   String get companionModeLight => '轻量';
 
   @override
-  String get companionModeLightHint => '只聊天。手机直连模型，不用启动引擎';
+  String get companionModeLightHint => '只聊天。手机直连模型，不用启动引擎；可以选第三方渠道';
 
   @override
   String get companionModeFull => '完整';
@@ -5271,7 +5271,32 @@ class L10nZh extends L10n {
   String get companionModeFullHint => '主机上的 DSH 引擎，带工具和手机操控';
 
   @override
-  String get companionLightNoKey => '轻量模式要用 DeepSeek API Key，在设置里填上就能和我聊啦。';
+  String get companionMenuChannel => '渠道';
+
+  @override
+  String get companionMenuChannelHint => '轻量模式下她直连的接口';
+
+  @override
+  String get companionChannelNote => '和酒馆共用这份渠道列表：在这里或酒馆设置里添加，两边都能选。Key 只存在这台手机的安全存储里。';
+
+  @override
+  String get companionChannelEditorNote =>
+      '兼容 OpenAI 接口的服务都能加：中转站、OpenRouter、自己电脑上跑的模型。Key 只存在这台手机的安全存储里，这个渠道也会出现在酒馆的列表里。';
+
+  @override
+  String get companionModel => '模型';
+
+  @override
+  String get companionModelHint => '完整模式用当前主机的模型';
+
+  @override
+  String get companionModelDefault => '主机默认';
+
+  @override
+  String get companionModelFailed => '没能换成这个模型，等一会儿再试。';
+
+  @override
+  String get companionLightNoKey => '轻量模式要用 DeepSeek API Key（或在菜单的渠道里选一个第三方接口），在设置里填上就能和我聊啦。';
 
   @override
   String get companionLightBadKey => 'API Key 好像不对，或者已经失效了。';

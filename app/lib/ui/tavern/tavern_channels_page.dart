@@ -102,14 +102,42 @@ class TavernChannelsPage extends ConsumerWidget {
   }
 }
 
-/// Adds a channel (null) or edits one; saving a new one also starts using it.
+/// Adds a channel (null) or edits one; saving a new one also starts using it
+/// in 酒馆 unless [onSaved] takes over (伙伴小屋 uses the same list and picks
+/// the channel itself).
 class TavernChannelEditPage extends ConsumerStatefulWidget {
-  const TavernChannelEditPage({super.key, this.channel});
+  const TavernChannelEditPage({
+    super.key,
+    this.channel,
+    this.onSaved,
+    this.showDeepSeekApi = true,
+    this.note,
+  });
 
-  static Route<void> route(TavernChannel? channel) =>
-      MaterialPageRoute<void>(builder: (_) => TavernChannelEditPage(channel: channel));
+  static Route<void> route(
+    TavernChannel? channel, {
+    ValueChanged<TavernChannel>? onSaved,
+    bool showDeepSeekApi = true,
+    String? note,
+  }) => MaterialPageRoute<void>(
+    builder: (_) => TavernChannelEditPage(
+      channel: channel,
+      onSaved: onSaved,
+      showDeepSeekApi: showDeepSeekApi,
+      note: note,
+    ),
+  );
 
   final TavernChannel? channel;
+
+  /// Called after the channel is saved, instead of 酒馆开始使用它.
+  final ValueChanged<TavernChannel>? onSaved;
+
+  /// The 思考 / `/beta` switch only means something to 酒馆.
+  final bool showDeepSeekApi;
+
+  /// The note under the form; null is the tavern's own.
+  final String? note;
 
   @override
   ConsumerState<TavernChannelEditPage> createState() => _TavernChannelEditPageState();
@@ -254,7 +282,11 @@ class _TavernChannelEditPageState extends ConsumerState<TavernChannelEditPage> {
     // an edit keeps the stored key unless a new one was typed.
     try {
       await controller.saveChannel(channel, key: widget.channel == null || key.isNotEmpty || _clearKey ? key : null);
-      if (widget.channel == null) await controller.setChannel(channel.id);
+      if (widget.onSaved case final saved?) {
+        saved(channel);
+      } else if (widget.channel == null) {
+        await controller.setChannel(channel.id);
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -425,17 +457,18 @@ class _TavernChannelEditPageState extends ConsumerState<TavernChannelEditPage> {
             ),
           ],
         ),
-        SettingsSection(
-          children: [
-            SettingsSwitchTile(
-              key: const ValueKey('tavern-channel-deepseek-api'),
-              title: l10n.tavernChannelDeepSeekApi,
-              subtitle: l10n.tavernChannelDeepSeekApiNote,
-              value: _deepseek,
-              onChanged: (on) => setState(() => _deepseek = on),
-            ),
-          ],
-        ),
+        if (widget.showDeepSeekApi)
+          SettingsSection(
+            children: [
+              SettingsSwitchTile(
+                key: const ValueKey('tavern-channel-deepseek-api'),
+                title: l10n.tavernChannelDeepSeekApi,
+                subtitle: l10n.tavernChannelDeepSeekApiNote,
+                value: _deepseek,
+                onChanged: (on) => setState(() => _deepseek = on),
+              ),
+            ],
+          ),
         if (widget.channel != null)
           SettingsSection(
             children: [
@@ -450,7 +483,7 @@ class _TavernChannelEditPageState extends ConsumerState<TavernChannelEditPage> {
           ),
         Padding(
           padding: const EdgeInsets.fromLTRB(32, 0, 32, FormBottomBar.height),
-          child: Text(l10n.tavernChannelsNote, style: quiet),
+          child: Text(widget.note ?? l10n.tavernChannelsNote, style: quiet),
         ),
       ],
     );

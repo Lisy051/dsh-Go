@@ -2,6 +2,11 @@
 // the phone, with no engine and no host. The same Messages API the engine's
 // DeepSeek adapter uses (@deepseek-ai/dsh-llm-deepseek), with the API key
 // saved in the app; her conversation is a small file next to the pack.
+//
+// A channel added under 酒馆 › 渠道 (tavern_channels.dart) can answer instead:
+// it speaks OpenAI's Chat Completions format, so any relay, OpenRouter or a
+// model on the person's own computer works. [CompanionLightChannel] carries
+// that endpoint; the key is read by the caller and never kept here.
 
 import 'dart:async';
 import 'dart:convert';
@@ -17,6 +22,27 @@ const companionLightEndpoint = 'https://api.deepseek.com/anthropic/v1/messages';
 /// The fast model of the official route (text and images); thinking off, so a
 /// line comes back as quickly as she would say it.
 const companionLightModel = 'deepseek-flash';
+
+/// Her reply's endpoint when it is not DeepSeek's own: an OpenAI-compatible
+/// Chat Completions service added in 酒馆 › 渠道. [baseUrl] is as typed (a root
+/// or a whole `…/chat/completions` URL); [headers] are the channel's own.
+class CompanionLightChannel {
+  const CompanionLightChannel({required this.baseUrl, required this.model, this.headers = const {}});
+
+  final String baseUrl;
+  final String model;
+  final Map<String, String> headers;
+}
+
+/// Where [baseUrl]'s Chat Completions sits: a whole `/chat/completions` URL is
+/// kept, anything else gets the path appended (the tavern's own rule, without
+/// DeepSeek's `/beta`).
+Uri companionChatCompletionsUrl(String baseUrl) {
+  final uri = Uri.parse(baseUrl.trim()).removeFragment();
+  var path = uri.path.replaceFirst(RegExp(r'/+$'), '');
+  if (!path.endsWith('/chat/completions')) path = '$path/chat/completions';
+  return uri.replace(path: path, query: uri.query.isEmpty ? null : uri.query);
+}
 
 /// One verbatim transcript line. Request-only context is assembled separately.
 class CompanionLine {
@@ -62,7 +88,8 @@ class CompanionLightError implements Exception {
 }
 
 /// Her reply to [lines], as text deltas. Cancelling the subscription drops the
-/// request; [client] is the caller's to close.
+/// request; [client] is the caller's to close. With [channel], the request goes
+/// to that OpenAI-compatible endpoint instead of DeepSeek's own Messages API.
 Stream<String> streamCompanionReply({
   required http.Client client,
   required String apiKey,
@@ -70,6 +97,34 @@ Stream<String> streamCompanionReply({
   required List<CompanionLine> lines,
   CompanionTurnContext? context,
   int maxTokens = 800,
+  CompanionLightChannel? channel,
+}) => channel == null
+    ? _streamDeepSeek(
+        client: client,
+        apiKey: apiKey,
+        system: system,
+        lines: lines,
+        context: context,
+        maxTokens: maxTokens,
+      )
+    : _streamChannel(
+        client: client,
+        channel: channel,
+        apiKey: apiKey,
+        system: system,
+        lines: lines,
+        context: context,
+        maxTokens: maxTokens,
+      );
+
+/// DeepSeek's own Messages API, the engine's format (thinking off).
+Stream<String> _streamDeepSeek({
+  required http.Client client,
+  required String apiKey,
+  required String system,
+  required List<CompanionLine> lines,
+  CompanionTurnContext? context,
+  required int maxTokens,
 }) async* {
   final request = http.Request('POST', Uri.parse(companionLightEndpoint))
     ..headers.addAll({
@@ -150,6 +205,124 @@ Stream<String> streamCompanionReply({
   // The connection ended before message_stop: the reply is incomplete, not done.
   throw const CompanionLightError(CompanionLightFailure.network, 'ended before message_stop');
 }
+
+/// An OpenAI-compatible Chat Completions stream (`data: {"choices": …}`).
+/// A non-empty [apiKey] is the Authorization; a keyless channel's own
+/// Authorization header is kept, as the tavern keeps it.
+Stream<String> _streamChannel({
+  required http.Client client,
+  required CompanionLightChannel channel,
+  required String apiKey,
+  required String system,
+  required List<CompanionLine> lines,
+  CompanionTurnContext? context,
+  required int maxTokens,
+}) async* {
+  final hasKey = apiKey.isNotEmpty;
+  final request = http.Request('POST', companionChatCompletionsUrl(channel.baseUrl))
+    ..headers.addAll({
+      'content-type': 'application/json',
+      'accept': 'text/event-stream',
+      for (final MapEntry(:key, :value) in channel.headers.entries)
+        if (!hasKey || key.toLowerCase() != 'authorization') key: value,
+      if (hasKey) 'Authorization': 'Bearer $apiKey',
+    })
+    ..body = jsonEncode({
+      'model': channel.model,
+      'stream': true,
+      'max_tokens': maxTokens,
+      'messages': _openAiMessages(system: system, lines: lines, context: context),
+    });
+  final http.StreamedResponse response;
+  try {
+    response = await client.send(request).timeout(const Duration(seconds: 30));
+  } on Object catch (error) {
+    throw CompanionLightError(CompanionLightFailure.network, '$error');
+  }
+  if (response.statusCode != 200) {
+    final failure = switch (response.statusCode) {
+      401 || 403 => CompanionLightFailure.badKey,
+      429 => CompanionLightFailure.busy,
+      _ => CompanionLightFailure.server,
+    };
+    throw CompanionLightError(failure, '${response.statusCode} ${await _note(response.stream)}');
+  }
+  final events = response.stream
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())
+      .timeout(const Duration(seconds: 45));
+  try {
+    await for (final line in events) {
+      if (!line.startsWith('data:')) continue;
+      final data = line.substring(5).trim();
+      if (data.isEmpty || data == '[DONE]') continue;
+      final Object? event;
+      try {
+        event = jsonDecode(data);
+      } on FormatException {
+        continue;
+      }
+      if (event is! Map) continue;
+      // Some services report a failure as a data event rather than a status.
+      if (event['error'] != null) {
+        final error = event['error'];
+        final kind = error is Map ? error['type'] : null;
+        throw CompanionLightError(
+          kind == 'overloaded_error' || kind == 'rate_limit_error' || kind == 'server_error'
+              ? CompanionLightFailure.busy
+              : CompanionLightFailure.server,
+          error is Map ? '${error['message']}' : '$error',
+        );
+      }
+      final choices = event['choices'];
+      if (choices is! List || choices.isEmpty) continue;
+      final choice = choices.first;
+      if (choice is! Map) continue;
+      final delta = choice['delta'];
+      if (delta is! Map) continue;
+      final content = delta['content'];
+      if (content is String) {
+        if (content.isNotEmpty) yield content;
+      } else if (content is List) {
+        // A compatible service may send content parts instead of a string.
+        for (final part in content) {
+          if (part is Map && part['text'] is String && (part['type'] == null || part['type'] == 'text')) {
+            final text = part['text'] as String;
+            if (text.isNotEmpty) yield text;
+          }
+        }
+      }
+    }
+  } on CompanionLightError {
+    rethrow;
+  } on Object catch (error) {
+    throw CompanionLightError(CompanionLightFailure.network, '$error');
+  }
+}
+
+/// The system line, then [lines] in Chat Completions' shape. A text block list
+/// (the newest line's context) is flattened for services that only take a
+/// string.
+List<Map<String, Object?>> _openAiMessages({
+  required String system,
+  required List<CompanionLine> lines,
+  CompanionTurnContext? context,
+}) => [
+  {'role': 'system', 'content': system},
+  for (final message in companionRequestMessages([
+    for (final line in lines) (role: line.role, text: line.text),
+  ], context: context))
+    {'role': message['role'], 'content': _plainText(message['content'])},
+];
+
+String _plainText(Object? content) => switch (content) {
+  final String text => text,
+  final List<Object?> blocks => [
+    for (final block in blocks)
+      if (block is Map && block['text'] is String) block['text'] as String,
+  ].where((text) => text.isNotEmpty).join('\n\n'),
+  _ => '',
+};
 
 /// Up to [limit] bytes of an error body, within [wait]; never more, never longer.
 Future<String> _note(Stream<List<int>> body, {int limit = 512, Duration wait = const Duration(seconds: 2)}) async {
